@@ -1,6 +1,6 @@
 //! Interactive terminal viewer.
 
-use std::io::stdout;
+use std::io::{stdout, BufWriter, Stdout};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,12 +10,17 @@ use crossterm::event::{
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
+    EnterAlternateScreen, LeaveAlternateScreen,
+};
 use glam::Vec3;
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::DefaultTerminal;
+use ratatui::Terminal;
 
 use crate::camera::{OrbitCamera, UpAxis};
 use crate::render::{self, Backend, Frame, RenderStats, Renderer};
@@ -40,6 +45,40 @@ pub struct ViewerOptions {
     pub up: UpAxis,
     pub supersample: u32,
     pub color: ColorMode,
+}
+
+/// Large output buffer: a full truecolor frame is hundreds of KB of escape
+/// codes, and stdout's default line buffering would split it into many writes.
+type Term = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
+
+fn init_terminal() -> Result<Term> {
+    // Restore the terminal before the default panic message is printed.
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        prev(info);
+    }));
+    enable_raw_mode()?;
+    let setup = execute!(stdout(), EnterAlternateScreen, EnableMouseCapture);
+    let term = setup.map_err(anyhow::Error::from).and_then(|_| {
+        Ok(Terminal::new(CrosstermBackend::new(
+            BufWriter::with_capacity(1 << 20, stdout()),
+        ))?)
+    });
+    if term.is_err() {
+        restore_terminal();
+    }
+    term
+}
+
+fn restore_terminal() {
+    let _ = execute!(
+        stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    let _ = disable_raw_mode();
 }
 
 struct Drag {
@@ -99,23 +138,14 @@ pub fn run(scene: Arc<Scene>, opts: ViewerOptions) -> Result<()> {
         message: None,
     };
 
-    let mut terminal = ratatui::init();
-    // ratatui's hook restores the screen; also release the mouse on panic.
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableMouseCapture);
-        prev(info);
-    }));
-    let result = execute!(stdout(), EnableMouseCapture)
-        .map_err(anyhow::Error::from)
-        .and_then(|_| app.event_loop(&mut terminal));
-    let _ = execute!(stdout(), DisableMouseCapture);
-    ratatui::restore();
+    let mut terminal = init_terminal()?;
+    let result = app.event_loop(&mut terminal);
+    restore_terminal();
     result
 }
 
 impl App {
-    fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn event_loop(&mut self, terminal: &mut Term) -> Result<()> {
         let mut last_tick = Instant::now();
         while !self.quit {
             if self.auto_rotate {
@@ -138,8 +168,9 @@ impl App {
             } else {
                 self.last_frame = None;
             }
+            // Auto-rotate is capped at ~60 fps; otherwise sleep until input arrives.
             let timeout = if self.auto_rotate {
-                Duration::ZERO
+                Duration::from_millis(16).saturating_sub(last_tick.elapsed())
             } else {
                 Duration::from_millis(250)
             };
@@ -157,11 +188,9 @@ impl App {
         Ok(())
     }
 
-    fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn draw(&mut self, terminal: &mut Term) -> Result<()> {
         let size = terminal.size()?;
-        let area = Rect::new(0, 0, size.width, size.height);
-        let [view_area, status_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        let [view_area, _] = split(Rect::new(0, 0, size.width, size.height));
         self.view_rows = view_area.height.max(1);
         let ss = self.supersample;
         let (w, h) = (
@@ -194,13 +223,20 @@ impl App {
             frame: &self.display,
             mode: self.color,
         };
+        // Synchronized output (DEC 2026) avoids tearing on supporting terminals
+        // and is ignored elsewhere.
+        execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         terminal.draw(|f| {
+            // Re-derive the layout: the terminal may have been resized while
+            // rendering, and ratatui resizes its buffer inside `draw`.
+            let [view_area, status_area] = split(f.area());
             f.render_widget(image, view_area);
             f.render_widget(Paragraph::new(status), status_area);
             if help {
                 draw_help(f, view_area);
             }
         })?;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         self.present_ms = t.elapsed().as_secs_f64() * 1e3;
         Ok(())
     }
@@ -212,31 +248,33 @@ impl App {
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
         let dim = Style::default().fg(Color::Gray).bg(Color::DarkGray);
+        // Most important information first: narrow terminals truncate the tail.
         let mut text = format!(
-            " {} │ {} splats │ {} visible │ render {:.1}ms (proj {:.1} sort {:.1} rast {:.1}) │ draw {:.1}ms",
+            " {} │ {}/{} visible │ {:.1}ms",
             self.title,
-            human(self.scene.len()),
             human(s.visible),
-            s.total_ms,
+            human(self.scene.len()),
+            s.total_ms + self.present_ms,
+        );
+        if self.fps > 0.0 {
+            text.push_str(&format!(" {:.0}fps", self.fps));
+        }
+        if let Some((m, _)) = &self.message {
+            text.push_str(&format!(" │ {m}"));
+        }
+        text.push_str(&format!(
+            " │ yaw {:.0}° pitch {:.0}° │ {} ss{} up{} │ proj {:.1} sort {:.1} rast {:.1} draw {:.1} ",
+            self.camera.yaw.to_degrees(),
+            self.camera.pitch.to_degrees(),
+            self.renderer.name(),
+            self.supersample,
+            self.camera.up.label(),
             s.project_ms,
             s.sort_ms,
             s.raster_ms,
             self.present_ms,
-        );
-        if self.fps > 0.0 {
-            text.push_str(&format!(" │ {:.0} fps", self.fps));
-        }
-        text.push_str(&format!(
-            " │ {} │ ss{} │ up {} │ ",
-            self.renderer.name(),
-            self.supersample,
-            self.camera.up.label()
         ));
-        if let Some((m, _)) = &self.message {
-            text.push_str(m);
-            text.push_str(" │ ");
-        }
-        Line::from(vec![Span::styled(" ? help ", key), Span::styled(text, dim)])
+        Line::from(vec![Span::styled(" ? help ", key), Span::styled(text, dim)]).style(dim)
     }
 
     fn handle(&mut self, ev: Event) {
@@ -252,8 +290,15 @@ impl App {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let cam = &mut self.camera;
+        // An unmapped key must not cancel a redraw requested earlier in the
+        // same batch of events.
+        let was_dirty = self.dirty;
         self.dirty = true;
-        match k.code {
+        let code = match k.code {
+            KeyCode::Char(c) if !ctrl => KeyCode::Char(c.to_ascii_lowercase()),
+            other => other,
+        };
+        match code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Left if shift => cam.pan(PAN_STEP, 0.0),
@@ -280,7 +325,7 @@ impl App {
             KeyCode::Char(' ') => self.auto_rotate = !self.auto_rotate,
             KeyCode::Char('b') => self.background = (self.background + 1) % BACKGROUNDS.len(),
             KeyCode::Char('x') => {
-                self.supersample = self.supersample % 3 + 1;
+                self.supersample = self.supersample % 4 + 1;
                 self.flash(format!("supersample {}x", self.supersample));
             }
             KeyCode::Char('m') => {
@@ -294,7 +339,7 @@ impl App {
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
                 self.show_help = !self.show_help
             }
-            _ => self.dirty = false,
+            _ => self.dirty = was_dirty,
         }
     }
 
@@ -369,6 +414,11 @@ impl App {
     }
 }
 
+/// Viewport above a one-line status bar.
+fn split(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area)
+}
+
 fn draw_help(f: &mut ratatui::Frame, area: Rect) {
     let lines = [
         ("mouse drag", "rotate (orbit)"),
@@ -382,7 +432,7 @@ fn draw_help(f: &mut ratatui::Frame, area: Rect) {
         ("u", "cycle up axis (+Y -Y +Z -Z)"),
         ("space", "toggle auto-rotate"),
         ("b", "cycle background"),
-        ("x", "cycle supersampling 1x-3x"),
+        ("x", "cycle supersampling 1x-4x"),
         ("m", "toggle truecolor / 256 colors"),
         ("n", "next render backend"),
         ("? / h", "toggle this help"),

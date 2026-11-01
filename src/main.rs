@@ -229,8 +229,8 @@ fn main() -> Result<()> {
             cam.pitch = pitch
                 .to_radians()
                 .clamp(-splat_tui::camera::MAX_PITCH, splat_tui::camera::MAX_PITCH);
-            if zoom <= 0.0 {
-                bail!("--zoom must be positive");
+            if !(zoom > 0.0 && zoom.is_finite() && yaw.is_finite() && pitch.is_finite()) {
+                bail!("--zoom must be positive and --yaw/--pitch finite");
             }
             cam.zoom(1.0 / zoom);
             let mut r = render::create(backend, scene)?;

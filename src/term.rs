@@ -108,6 +108,7 @@ pub struct HalfBlockImage<'a> {
 impl Widget for HalfBlockImage<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let f = self.frame;
+        let area = area.intersection(buf.area);
         let cols = (area.width as u32).min(f.width);
         let rows = (area.height as u32).min(f.height / 2);
         for cy in 0..rows {
