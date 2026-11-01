@@ -1,0 +1,4 @@
+/target
+/scenes/downloaded/
+/scenes/*.ply
+/scenes/*.splat
