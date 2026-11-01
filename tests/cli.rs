@@ -150,12 +150,15 @@ fn render_error_cases() {
         vec!["render", "gen:cube", "-o", out, "--zoom", "0"],
         vec!["render", "gen:cube", "-o", out, "--zoom", "-2"],
         vec!["render", "gen:cube", "-o", out, "--up", "w"],
-        vec!["render", "gen:cube", "-o", out, "--backend", "gpu"],
         vec!["render", "gen:cube"],
         vec!["bench", "gen:cube", "--size", "bogus"],
         vec!["bench", "/no/such/file.splat"],
         vec!["bogus-subcommand-or-file.ply"],
     ];
+    let mut cases = cases;
+    if !cfg!(feature = "gpu") {
+        cases.push(vec!["render", "gen:cube", "-o", out, "--backend", "gpu"]);
+    }
     for args in cases {
         let o = run(&args);
         assert!(!o.status.success(), "{args:?} should fail; stdout {}", stdout(&o));
