@@ -213,7 +213,6 @@ fn gpu_backend_unavailable_without_feature() {
 /// depth. Both backends use an unstable sort, so blend order among ties (and thus
 /// the image) differs: PSNR is only 21-35 dB at yaw 0.
 #[test]
-#[ignore = "bug: render backends disagree on exact-depth ties (unstable sorts without a tiebreak, src/render/{cpu,naive}.rs)"]
 fn backends_agree_with_exact_depth_ties() {
     let scene = Arc::new(gen::generate("cube").unwrap());
     let cam = OrbitCamera::new(scene.bounds(), UpAxis::NegY);
