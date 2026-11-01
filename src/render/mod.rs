@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use glam::{Mat3, Vec3};
 
 use crate::camera::View;
@@ -113,7 +113,7 @@ fn create_gpu(scene: Arc<Scene>) -> Result<Box<dyn Renderer>> {
 
 #[cfg(not(feature = "gpu"))]
 fn create_gpu(_scene: Arc<Scene>) -> Result<Box<dyn Renderer>> {
-    bail!("this build has no GPU backend; rebuild with `--features gpu`")
+    anyhow::bail!("this build has no GPU backend; rebuild with `--features gpu`")
 }
 
 #[cfg(feature = "gpu")]

@@ -20,6 +20,9 @@ crossterm = "0.28"
 glam = "0.29"
 ratatui = "0.29"
 rayon = "1.10"
+wgpu = { version = "27", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1.23", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -38,4 +41,4 @@ opt-level = 3
 
 [features]
 default = []
-gpu = []
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
