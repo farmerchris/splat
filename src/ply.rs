@@ -254,6 +254,9 @@ pub fn parse(data: &[u8]) -> Result<Scene> {
     let el = &header.elements[vi];
     let cols = Columns::resolve(&el.props)?;
     let n = el.count;
+    // Never trust the header count for allocation: every vertex occupies at
+    // least one byte of the file, so cap reservations by the file size.
+    let n_reserve = n.min(data.len());
     let nprops = el.props.len();
 
     // Decode every vertex into a row of f64 values, then map columns.
@@ -263,12 +266,12 @@ pub fn parse(data: &[u8]) -> Result<Scene> {
     let rest_used = 3 * (crate::sh::coeffs_for_degree(degree) - 1);
     let per_channel = rest_used / 3;
     scene.sh_degree = degree;
-    scene.positions.reserve(n);
-    scene.scales.reserve(n);
-    scene.rotations.reserve(n);
-    scene.opacities.reserve(n);
-    scene.colors.reserve(n);
-    scene.sh_rest.reserve(n * per_channel);
+    scene.positions.reserve(n_reserve);
+    scene.scales.reserve(n_reserve);
+    scene.rotations.reserve(n_reserve);
+    scene.opacities.reserve(n_reserve);
+    scene.colors.reserve(n_reserve);
+    scene.sh_rest.reserve(n_reserve.saturating_mul(per_channel));
 
     let emit = |row: &[f64], scene: &mut Scene| {
         let f = |i: usize| row[i] as f32;
