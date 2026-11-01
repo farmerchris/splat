@@ -37,6 +37,9 @@ impl Renderer for CpuNaive {
         let start = Instant::now();
         frame.resize(width, height);
         let mut stats = RenderStats::default();
+        if width == 0 || height == 0 {
+            return stats;
+        }
         let ctx = ProjectCtx::new(view, width, height);
         let scene = &*self.scene;
         let mut splats: Vec<Splat2D> = (0..scene.len())
@@ -44,7 +47,9 @@ impl Renderer for CpuNaive {
             .collect();
         stats.visible = splats.len();
         let t_proj = Instant::now();
-        splats.sort_unstable_by(|a, b| a.depth.total_cmp(&b.depth));
+        // Stable sort: equal depths keep scene-index order, matching the tiled
+        // backend's (depth, index) keys so output is deterministic.
+        splats.sort_by(|a, b| a.depth.total_cmp(&b.depth));
         let t_sort = Instant::now();
 
         let n = (width * height) as usize;

@@ -15,6 +15,8 @@ use crate::scene::Scene;
 
 pub mod cpu;
 pub mod naive;
+mod radix;
+mod simd;
 
 /// Low-pass filter added to the projected covariance (in pixels²) so that
 /// sub-pixel gaussians still cover at least ~one pixel.
@@ -155,6 +157,16 @@ impl ProjectCtx {
     pub fn new(view: &View, width: u32, height: u32) -> Self {
         let focal = view.focal(height);
         let (w, h) = (width as f32, height as f32);
+        // Degenerate (zero-sized) outputs would make the limits NaN, and
+        // `f32::clamp` panics on NaN bounds.
+        let lim = |half: f32| {
+            let l = 1.3 * (half / focal);
+            if l.is_finite() {
+                l
+            } else {
+                0.0
+            }
+        };
         ProjectCtx {
             rot: view.rotation(),
             eye: view.eye,
@@ -166,8 +178,8 @@ impl ProjectCtx {
             near: view.near,
             // Clamp the Jacobian's evaluation point like the reference code so
             // gaussians far outside the frustum don't blow up.
-            lim_x: 1.3 * (w * 0.5 / focal),
-            lim_y: 1.3 * (h * 0.5 / focal),
+            lim_x: lim(w * 0.5),
+            lim_y: lim(h * 0.5),
         }
     }
 }
@@ -320,5 +332,50 @@ mod tests {
         let ctx = ProjectCtx::new(&v, 100, 80);
         let off = one_splat(v.right * 100.0, 1.0);
         assert!(project(&off, 0, &ctx).is_none());
+    }
+
+    /// Regression: a zero-sized output used to give NaN Jacobian limits and
+    /// make `f32::clamp` panic.
+    #[test]
+    fn zero_size_render_does_not_panic() {
+        let ctx = ProjectCtx::new(&view(), 100, 0);
+        assert!(ctx.lim_x.is_finite() && ctx.lim_y.is_finite());
+        let scene = Arc::new(crate::gen::generate("cube").unwrap());
+        for b in [Backend::Cpu, Backend::CpuNaive] {
+            let mut r = create(b, scene.clone()).unwrap();
+            for (w, h) in [(0, 0), (64, 0), (0, 64)] {
+                let mut f = Frame::default();
+                r.render(&view(), w, h, Vec3::ZERO, &mut f);
+                assert!(f.pixels.is_empty());
+            }
+        }
+    }
+
+    /// Regression: splats at exactly equal depths (the cube lattice) must be
+    /// blended in scene-index order by both CPU backends, so they agree and
+    /// output is deterministic.
+    #[test]
+    fn equal_depth_ties_match_reference() {
+        let scene = Arc::new(crate::gen::generate("cube").unwrap());
+        let cam = OrbitCamera::new(scene.bounds(), UpAxis::NegY);
+        let mut views = vec![cam.view()];
+        let mut c = cam.clone();
+        c.pitch = 0.0;
+        c.yaw = 0.0;
+        views.push(c.view());
+        for view in &views {
+            for (w, h) in [(37, 23), (64, 64), (160, 90)] {
+                let render = |b| {
+                    let mut f = Frame::default();
+                    create(b, scene.clone()).unwrap().render(view, w, h, Vec3::ZERO, &mut f);
+                    f
+                };
+                let reference = render(Backend::CpuNaive);
+                let tiled = render(Backend::Cpu);
+                let psnr = crate::bench::psnr(&reference, &tiled);
+                assert!(psnr >= 45.0, "{w}x{h}: psnr {psnr}");
+                assert_eq!(render(Backend::Cpu).pixels, tiled.pixels, "{w}x{h}: nondeterministic");
+            }
+        }
     }
 }
