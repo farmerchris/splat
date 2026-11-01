@@ -2,3 +2,4 @@
 /scenes/downloaded/
 /scenes/*.ply
 /scenes/*.splat
+/target*
