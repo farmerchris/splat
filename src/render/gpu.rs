@@ -488,6 +488,12 @@ pub struct GpuRenderer {
     min_cap: u32,
     /// Largest pair capacity the device (and our memory budget) allows.
     max_cap: u32,
+    /// Largest single buffer the device allows binding.
+    max_buffer: u64,
+    /// Kept for the CPU fallback used when a frame's per-tile buffers exceed
+    /// device limits (only at extreme output sizes).
+    scene: Arc<Scene>,
+    fallback: Option<super::cpu::CpuTiled>,
 }
 
 /// Result of one GPU frame.
@@ -694,7 +700,21 @@ impl GpuRenderer {
             // Start with room for ~2 pairs per gaussian; grow on overflow.
             min_cap: n.saturating_mul(2).max(1 << 18),
             max_cap,
+            max_buffer: (dl.max_storage_buffer_binding_size as u64).min(dl.max_buffer_size),
+            scene,
+            fallback: None,
         })
+    }
+
+    /// Whether the size-dependent buffers for a `width`×`height` frame (at the
+    /// smallest pair capacity) fit within the device's buffer limits.
+    fn fits(&self, width: u32, height: u32) -> bool {
+        let num_tiles = width.div_ceil(TILE) as u64 * height.div_ceil(TILE) as u64;
+        let cap = self.min_cap.min(self.max_cap);
+        let slots = num_tiles + (cap / CHUNK) as u64 + 1;
+        let partial = slots * (TILE * TILE) as u64 * 16;
+        let image = width as u64 * height as u64 * 4;
+        partial.max(image).max(num_tiles * 8) <= self.max_buffer
     }
 
     /// (Re)create everything that depends on the output size or pair capacity.
@@ -1004,6 +1024,16 @@ impl Renderer for GpuRenderer {
             stats.total_ms = start.elapsed().as_secs_f64() * 1e3;
             return stats;
         }
+        if !self.fits(width, height) {
+            if self.debug {
+                eprintln!("gpu: {width}x{height} exceeds device buffer limits; rendering on the CPU");
+            }
+            let scene = &self.scene;
+            let cpu = self
+                .fallback
+                .get_or_insert_with(|| super::cpu::CpuTiled::new(scene.clone()));
+            return cpu.render(view, width, height, background, frame);
+        }
         self.ensure_sized(width, height, self.min_cap);
         let mut out = self.run_frame(view, width, height, background);
         let cap = self.sized.as_ref().map_or(0, |s| s.cap);
@@ -1191,6 +1221,33 @@ mod tests {
         }
         let p = psnr(&reference, &first);
         assert!(p >= 45.0, "psnr vs CpuTiled {p:.1} dB");
+    }
+
+    #[test]
+    fn gpu_falls_back_to_cpu_past_buffer_limits() {
+        let scene = Arc::new(crate::gen::generate("cube").unwrap());
+        let mut gpu = match GpuRenderer::new(scene.clone()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e:#}");
+                return;
+            }
+        };
+        let (w, h) = (96, 64);
+        assert!(gpu.fits(w, h));
+        // Pretend the device only allows buffers too small for this frame.
+        gpu.max_buffer = 1 << 12;
+        assert!(!gpu.fits(w, h));
+        let cam = OrbitCamera::new(scene.bounds(), UpAxis::NegY);
+        let view = cam.view();
+        let bg = Vec3::new(0.1, 0.2, 0.3);
+        let mut reference = Frame::default();
+        CpuTiled::new(scene.clone()).render(&view, w, h, bg, &mut reference);
+        let mut got = Frame::default();
+        let stats = gpu.render(&view, w, h, bg, &mut got);
+        assert!(stats.visible > 0);
+        assert!(got.pixels == reference.pixels, "fallback should match CpuTiled exactly");
+        assert!(gpu.sized.is_none(), "no GPU buffers should be allocated");
     }
 
     #[test]

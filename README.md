@@ -100,7 +100,7 @@ backends are checked against each other.
 | `gen.rs` | Procedural scenes |
 | `bench.rs` | Benchmark harness, PSNR, dependency-free PNG writer |
 
-Tests: 44 unit tests (50 with `--features gpu`) and 83 integration tests in
+Tests: 44 unit tests (51 with `--features gpu`) and 83 integration tests in
 `tests/`, covering loaders and malformed input, backend agreement at odd sizes
 and poses, camera, terminal mapping, and the CLI.
 
@@ -116,7 +116,7 @@ each backend's image against the `cpu` backend.
 |---|---|
 | **CPU tiled, rayon** (`cpu`) | **Chosen as default.** Fastest at terminal resolutions, exact, no GPU dependency, works over SSH and in containers. |
 | CPU single-threaded reference (`cpu-naive`) | Kept as the correctness reference and baseline. 6–10× slower. |
-| **wgpu 27 compute** (`gpu`, Metal here) | Built and kept as an optional feature. Matches the CPU at ≈65 dB PSNR. Wins only at larger output sizes with 1M+ splats. |
+| **wgpu 27 compute** (`gpu`, Metal here) | Built and kept as an optional feature. Matches the CPU at ≈65 dB PSNR. Wins by 10–30% at 640×360 and above; loses or ties at terminal sizes. |
 | Direct Metal (`metal` crate) | Rejected: macOS-only and unsafe. Its main advantage over wgpu (avoiding wgpu's 1 ms Metal wait sleep) was solved inside the wgpu backend instead. |
 | Vulkan via MoltenVK (ash, vulkano) | Rejected: needs an SDK and translates to the same Metal driver, so it adds setup with no speed gain. |
 | OpenCL / CUDA | OpenCL is deprecated on macOS (1.2); CUDA is unavailable on Apple hardware. |
@@ -128,16 +128,16 @@ each backend's image against the `cpu` backend.
 
 | Scene | Size | cpu | gpu | cpu-naive | gpu PSNR |
 |---|---|---|---|---|---|
-| train.splat (1.03M) | 240×120 | **16.4** | 19.0 | 128.6 | 65.2 |
-| train.splat | 640×360 | **23.8** | 24.5 | 240.1 | 64.9 |
-| bonsai.ply (1.16M, SH3) | 240×120 | **24.4** | 27.8 | 168.5 | 64.0 |
-| bonsai.ply | 640×360 | 30.6 | **29.5** | 269.2 | 64.7 |
-| plush.splat (281k) | 240×120 | **5.1** | 6.4 | 40.7 | 68.0 |
-| plush.splat | 640×360 | 8.4 | **7.5** | 85.5 | 67.7 |
-| gen:galaxy (104k) | 240×120 | **2.0** | 3.2 | 13.8 | 72.0 |
-| gen:galaxy | 640×360 | 3.9 | **3.7** | 31.6 | 70.3 |
-| gen:shballs (36k, SH3) | 240×120 | **1.4** | 2.5 | 9.5 | 81.3 |
-| gen:shballs | 640×360 | 4.0 | **3.4** | 38.3 | 80.8 |
+| train.splat (1.03M) | 240×120 | **17.2** | 18.9 | 132.2 | 65.2 |
+| train.splat | 640×360 | 25.8 | **21.7** | 246.2 | 64.9 |
+| bonsai.ply (1.16M, SH3) | 240×120 | 26.4 | **26.3** | 178.1 | 64.0 |
+| bonsai.ply | 640×360 | 33.7 | **29.3** | 272.3 | 64.7 |
+| plush.splat (281k) | 240×120 | **5.5** | 6.4 | 41.3 | 68.1 |
+| plush.splat | 640×360 | 10.0 | **7.2** | 86.2 | 67.7 |
+| gen:galaxy (104k) | 240×120 | **2.1** | 3.2 | 13.9 | 72.0 |
+| gen:galaxy | 640×360 | 4.1 | **3.7** | 31.7 | 70.3 |
+| gen:shballs (36k, SH3) | 240×120 | **1.6** | 2.5 | 9.5 | 81.5 |
+| gen:shballs | 640×360 | 4.4 | **3.5** | 38.5 | 80.7 |
 
 The optimized CPU rasterizer runs 2.4–3.5× faster than its first version. Train at
 320×180 went from 57.8 to 16.6 ms; galaxy from 10.5 to 2.6 ms.
@@ -146,9 +146,10 @@ The optimized CPU rasterizer runs 2.4–3.5× faster than its first version. Tra
 
 A 200×50 terminal at 2× supersampling is 400×200 pixels. At that size the GPU
 pipeline's fixed cost (about 13 dispatches, plus waiting for submission and
-readback, about 2–3 ms) is as large as the whole CPU frame. The GPU pulls ahead
-only at larger outputs (640×360+) with heavy scenes, and even there by under
-10%. The CPU path also gives bit-exact output against the reference, avoids
+readback, about 2–3 ms) is as large as the whole CPU frame, so the CPU wins or
+ties at terminal sizes. The GPU pulls ahead at larger outputs (640×360+), by
+10–30%, which matters for `render` and huge terminals but not for a typical
+viewer window. The CPU path also gives bit-exact output against the reference, avoids
 pulling in about 55 extra crates, and works anywhere a terminal does (SSH, no GPU).
 The GPU backend remains available with `--features gpu` / `--backend gpu`, and
 you can switch live with `n`.
@@ -180,6 +181,11 @@ you can switch live with `n`.
 * A 24-bit depth key with 3 radix passes. The 16-bit key was rejected
   (33 dB on plush).
 * Splat records packed to 32 bytes (color stored as f16), plus `exp2`.
+* Deterministic stream compaction (flag, scan, scatter) so equal-depth splats
+  keep file order and repeated frames are bit-identical. This was also slightly
+  faster than the atomic-append version it replaced.
+* If a frame's per-tile buffers would exceed the device's buffer limits
+  (only near the 16384×16384 maximum), that frame is rendered on the CPU instead.
 
 ## License
 
