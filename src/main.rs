@@ -144,7 +144,7 @@ fn main() -> Result<()> {
         }) => {
             if list {
                 for (n, d) in gen::SCENES {
-                    println!("{n:<10} {d}");
+                    splat_tui::outln!("{n:<10} {d}");
                 }
                 return Ok(());
             }
@@ -174,7 +174,7 @@ fn main() -> Result<()> {
                 let path = out.join(format!("{n}.{ext}"));
                 std::fs::write(&path, bytes)
                     .with_context(|| format!("writing {}", path.display()))?;
-                println!("wrote {} ({} gaussians)", path.display(), scene.len());
+                splat_tui::outln!("wrote {} ({} gaussians)", path.display(), scene.len());
             }
             Ok(())
         }
@@ -188,7 +188,7 @@ fn main() -> Result<()> {
         }) => {
             let t = Instant::now();
             let (scene, title) = load(&scene)?;
-            println!(
+            splat_tui::outln!(
                 "{title}: {} gaussians (SH degree {}), loaded in {:.0} ms; {}x{} px, {frames} frames, {} threads",
                 scene.len(),
                 scene.sh_degree,
@@ -237,7 +237,7 @@ fn main() -> Result<()> {
             let mut frame = Frame::default();
             let stats = r.render(&cam.view(), size.0, size.1, Vec3::ZERO, &mut frame);
             bench::write_png(&out, &frame)?;
-            println!(
+            splat_tui::outln!(
                 "wrote {} ({} visible, {:.1} ms with {})",
                 out.display(),
                 stats.visible,

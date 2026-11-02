@@ -19,3 +19,13 @@ pub mod scene;
 pub mod sh;
 pub mod splat_format;
 pub mod term;
+
+/// `println!` that ignores write errors, so piping output into e.g. `head`
+/// doesn't panic with "Broken pipe".
+#[macro_export]
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}

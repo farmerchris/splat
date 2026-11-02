@@ -111,7 +111,7 @@ pub fn run(scene: Arc<Scene>, backends: &[Backend], cfg: &BenchConfig) -> Vec<Re
 }
 
 pub fn print_table(results: &[Result<BenchResult>], backends: &[Backend]) {
-    println!(
+    crate::outln!(
         "{:<10} {:>8} {:>8} {:>8} {:>8} {:>7} {:>8} {:>8} {:>8} {:>9} {:>10} {:>8}",
         "backend",
         "mean",
@@ -128,7 +128,7 @@ pub fn print_table(results: &[Result<BenchResult>], backends: &[Backend]) {
     );
     for (r, b) in results.iter().zip(backends) {
         match r {
-            Ok(r) => println!(
+            Ok(r) => crate::outln!(
                 "{:<10} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>8.2} {:>8.2} {:>8.2} {:>9} {:>10} {:>8}",
                 r.backend,
                 r.mean_ms,
@@ -144,7 +144,7 @@ pub fn print_table(results: &[Result<BenchResult>], backends: &[Backend]) {
                 r.psnr_vs_ref.map(|p| if p.is_infinite() { "inf".into() } else { format!("{p:.1}") })
                     .unwrap_or_else(|| "ref".into()),
             ),
-            Err(e) => println!("{:<10} unavailable: {e:#}", format!("{b:?}").to_lowercase()),
+            Err(e) => crate::outln!("{:<10} unavailable: {e:#}", format!("{b:?}").to_lowercase()),
         }
     }
 }
