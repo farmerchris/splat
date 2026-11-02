@@ -39,6 +39,15 @@ struct RSplat {
 
 const LOG2_E: f32 = 1.4426950408889634;
 
+// Depth key of a culled gaussian (real keys are < 2^(32 - DEPTH_SHIFT)).
+const NO_KEY: u32 = 0xffffffffu;
+
+// Saturating u32 addition (pair counts can exceed 2^32 in pathological views).
+fn sat_add(a: u32, b: u32) -> u32 {
+    let s = a + b;
+    return select(s, 0xffffffffu, s < a);
+}
+
 fn is_finite(x: f32) -> bool {
     return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
 }
@@ -47,7 +56,9 @@ fn linear_id(wid: vec3<u32>, nwg: vec3<u32>, lid: u32) -> u32 {
     return (wid.y * nwg.x + wid.x) * 256u + lid;
 }
 
-// Tile rectangle [x0, x1) x [y0, y1) covered by a splat (same as `cpu::tile_rect`).
+// Tile rectangle [x0, x1) x [y0, y1) covered by a splat: the tiles overlapping
+// its clamped pixel bounding box, as the CPU backend derives them from
+// `cpu.rs`'s `pixel_bbox`.
 fn tile_rect(s: vec4<f32>, tiles_x: u32, tiles_y: u32) -> vec4<u32> {
     let t = f32(TILE);
     let fx = f32(tiles_x);
