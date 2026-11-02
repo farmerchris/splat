@@ -100,7 +100,7 @@ backends are checked against each other.
 | `gen.rs` | Procedural scenes |
 | `bench.rs` | Benchmark harness, PSNR, dependency-free PNG writer |
 
-Tests: 42 unit tests (46 with `--features gpu`) and 83 integration tests in
+Tests: 44 unit tests (50 with `--features gpu`) and 83 integration tests in
 `tests/`, covering loaders and malformed input, backend agreement at odd sizes
 and poses, camera, terminal mapping, and the CLI.
 
