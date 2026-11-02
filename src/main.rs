@@ -112,8 +112,8 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
     let (w, h) = s.split_once(['x', 'X']).ok_or("expected WIDTHxHEIGHT")?;
     let w: u32 = w.parse().map_err(|_| "bad width")?;
     let h: u32 = h.parse().map_err(|_| "bad height")?;
-    if w == 0 || h == 0 || w > 16384 || h > 16384 {
-        return Err("size must be between 1 and 16384".into());
+    if w == 0 || h == 0 || w > render::MAX_DIM || h > render::MAX_DIM {
+        return Err(format!("size must be between 1 and {}", render::MAX_DIM));
     }
     Ok((w, h))
 }

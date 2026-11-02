@@ -192,7 +192,9 @@ impl App {
         let size = terminal.size()?;
         let [view_area, _] = split(Rect::new(0, 0, size.width, size.height));
         self.view_rows = view_area.height.max(1);
-        let ss = self.supersample;
+        // Stay within the renderer's frame size limit on huge terminals.
+        let largest = (view_area.width as u32).max(view_area.height as u32 * 2).max(1);
+        let ss = self.supersample.min(render::MAX_DIM / largest).max(1);
         let (w, h) = (
             view_area.width as u32 * ss,
             view_area.height as u32 * 2 * ss,

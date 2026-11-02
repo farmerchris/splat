@@ -28,6 +28,18 @@ pub const ALPHA_MAX: f32 = 0.99;
 /// Transmittance below which a pixel is considered saturated.
 pub const T_MIN: f32 = 1e-4;
 
+/// Largest supported output width or height. Renderers store pixel bounds in
+/// 16 bits and pixel indices in 32 bits, so larger frames are rejected.
+pub const MAX_DIM: u32 = 16384;
+
+fn pixel_count(width: u32, height: u32) -> usize {
+    assert!(
+        width <= MAX_DIM && height <= MAX_DIM,
+        "frame {width}x{height} exceeds the {MAX_DIM} pixel limit"
+    );
+    width as usize * height as usize
+}
+
 /// 8-bit RGB image, row-major.
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
@@ -41,14 +53,14 @@ impl Frame {
         Frame {
             width,
             height,
-            pixels: vec![[0; 3]; (width * height) as usize],
+            pixels: vec![[0; 3]; pixel_count(width, height)],
         }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.pixels.resize((width * height) as usize, [0; 3]);
+        self.pixels.resize(pixel_count(width, height), [0; 3]);
     }
 
     #[inline]
@@ -377,5 +389,23 @@ mod tests {
                 assert_eq!(render(Backend::Cpu).pixels, tiled.pixels, "{w}x{h}: nondeterministic");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "pixel limit")]
+    fn oversized_frame_is_rejected() {
+        Frame::default().resize(65536, 65537);
+    }
+
+    #[test]
+    fn max_frame_dims_allowed() {
+        let mut f = Frame::default();
+        f.resize(MAX_DIM, 1);
+        assert_eq!(f.pixels.len(), MAX_DIM as usize);
     }
 }

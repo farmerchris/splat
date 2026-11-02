@@ -155,7 +155,9 @@ impl Renderer for CpuTiled {
             for g in self.groups.iter_mut() {
                 let c = g.counts[t];
                 g.counts[t] = total;
-                total += c;
+                // Pair indices are u32; overflowing them would undersize the
+                // buffer written through raw pointers below.
+                total = total.checked_add(c).expect("more than 2^32 gaussian/tile pairs");
             }
         }
         self.tile_start[num_tiles] = total;
