@@ -1,14 +1,19 @@
-// Per-gaussian EWA projection (mirrors `render::project`). Visible splats are
-// compacted with an atomic counter and get a depth key for the global sort.
+// Per-gaussian EWA projection (mirrors `render::project`).
+//
+// Every gaussian i writes a visibility flag (0/1) to `flags[i]` and its depth
+// key (or NO_KEY) to `keys[i]`; visible ones also write `geom[i]` and
+// `rsplats[i]`. The host then runs an exclusive scan over the flags and
+// `compact.wgsl` packs the visible (key, i) pairs in scene-index order. Unlike
+// an atomic counter this is deterministic, and since the depth sort is stable
+// the final order is (depth key, original index), like the CPU backends.
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> gauss: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> sh: array<f32>;
-@group(0) @binding(3) var<storage, read_write> counters: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> flags: array<u32>;
 @group(0) @binding(4) var<storage, read_write> geom: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> keys: array<u32>;
-@group(0) @binding(6) var<storage, read_write> vals: array<u32>;
-@group(0) @binding(7) var<storage, read_write> rsplats: array<RSplat>;
+@group(0) @binding(6) var<storage, read_write> rsplats: array<RSplat>;
 
 const SH_C1: f32 = 0.4886025;
 const SH_C2_0: f32 = 1.0925485;
@@ -61,6 +66,17 @@ fn eval_sh(i: u32, dir: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+// Max color channel before packing to f16 (whose max finite value is 65504).
+const COLOR_MAX: f32 = 16.0;
+
+fn clamp_color(c: f32) -> f32 {
+    // Bit test rather than a comparison, which fast math may fold away.
+    if (!is_finite(c)) {
+        return 0.0;
+    }
+    return clamp(c, 0.0, COLOR_MAX);
+}
+
 fn normalize_or_zero(v: vec3<f32>) -> vec3<f32> {
     let r = 1.0 / length(v);
     if (is_finite(r) && r > 0.0) {
@@ -79,15 +95,23 @@ fn main(
     if (i >= P.n) {
         return;
     }
+    let dk = project_one(i);
+    keys[i] = dk;
+    flags[i] = select(1u, 0u, dk == NO_KEY);
+}
+
+// Projects gaussian i, writing geom[i] / rsplats[i] if it is visible.
+// Returns its depth key, or NO_KEY if it is culled.
+fn project_one(i: u32) -> u32 {
     let g0 = gauss[4u * i];
     let opacity = g0.w;
     if (opacity < ALPHA_MIN) {
-        return;
+        return NO_KEY;
     }
     let d = g0.xyz - P.eye.xyz;
     let t = vec3<f32>(dot(P.right.xyz, d), dot(P.down.xyz, d), dot(P.fwd.xyz, d));
     if (!(t.z > P.cam.w)) {
-        return;
+        return NO_KEY;
     }
     let focal = P.cam.x;
     let inv_z = 1.0 / t.z;
@@ -127,7 +151,7 @@ fn main(
     let cc = dot(t1, s1) + DILATION;
     let det = a * cc - b * b;
     if (!(det > 0.0)) {
-        return;
+        return NO_KEY;
     }
     let inv_det = 1.0 / det;
 
@@ -136,23 +160,24 @@ fn main(
     let ext_x = k * sqrt(a);
     let ext_y = k * sqrt(cc);
     if (x + ext_x <= 0.0 || x - ext_x >= P.size.x || y + ext_y <= 0.0 || y - ext_y >= P.size.y) {
-        return;
+        return NO_KEY;
     }
     if (!(is_finite(x) && is_finite(y) && is_finite(ext_x) && is_finite(ext_y))) {
-        return;
+        return NO_KEY;
     }
 
     var color = vec3<f32>(g2.z, g2.w, g3.x);
     if (P.sh_degree > 0u) {
         color += eval_sh(i, normalize_or_zero(d));
     }
-    color = max(color, vec3<f32>(0.0));
+    // Clamp (and drop NaN from degenerate SH) so pack2x16float can't produce
+    // inf, which would turn into NaN when blended with zero weight.
+    color = vec3<f32>(clamp_color(color.x), clamp_color(color.y), clamp_color(color.z));
 
-    let idx = atomicAdd(&counters[0], 1u);
-    geom[idx] = vec4<f32>(x, y, ext_x, ext_y);
+    geom[i] = vec4<f32>(x, y, ext_x, ext_y);
     // Conic (cc, -b, a) / det, pre-scaled for exp2 (see `RSplat`).
     let s = LOG2_E * inv_det;
-    rsplats[idx] = RSplat(
+    rsplats[i] = RSplat(
         vec4<f32>(x, y, -0.5 * s * cc, s * b),
         vec4<u32>(
             bitcast<u32>(-0.5 * s * a),
@@ -163,9 +188,9 @@ fn main(
     );
     // Positive floats order like their bit patterns, and every visible depth
     // is > near, so the offset from near's bit pattern is a monotonic key.
-    // Dropping DEPTH_SHIFT low bits keeps 2^-(23 - DEPTH_SHIFT) relative
-    // precision and lets the sort use fewer radix passes.
+    // Dropping DEPTH_SHIFT low bits keeps 23 - DEPTH_SHIFT mantissa bits,
+    // i.e. 2^-(23 - DEPTH_SHIFT) relative precision, and lets the sort use
+    // fewer radix passes. Keys within one bucket keep scene-index order.
     let dk = (bitcast<u32>(t.z) - bitcast<u32>(P.cam.w)) >> DEPTH_SHIFT;
-    keys[idx] = min(dk, 0xffffffffu >> DEPTH_SHIFT);
-    vals[idx] = idx;
+    return min(dk, 0xffffffffu >> DEPTH_SHIFT);
 }

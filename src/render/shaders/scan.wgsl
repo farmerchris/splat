@@ -1,6 +1,10 @@
 // Multi-level exclusive prefix sum over u32. Each workgroup scans a block of
 // 1024 elements and writes the block total to `sums`; the host scans `sums`
 // recursively and then adds the scanned block offsets back with `add`.
+//
+// All sums saturate at 0xffffffff instead of wrapping (saturating addition of
+// non-negative values is associative, so the scan stays exact below the
+// limit). This lets the tile binning detect pair counts beyond u32.
 
 struct ScanParams {
     len: u32,
@@ -17,6 +21,11 @@ const PER_THREAD: u32 = 4u;
 const BLOCK: u32 = 1024u;
 
 var<workgroup> tmp: array<u32, 256>;
+
+fn sat_add(a: u32, b: u32) -> u32 {
+    let s = a + b;
+    return select(s, 0xffffffffu, s < a);
+}
 
 fn block_id(wid: vec3<u32>, nwg: vec3<u32>) -> u32 {
     return wid.y * nwg.x + wid.x;
@@ -42,7 +51,7 @@ fn scan_blocks(
             x = data[idx];
         }
         v[k] = total;
-        total += x;
+        total = sat_add(total, x);
     }
     // Hillis-Steele inclusive scan of the per-thread totals.
     tmp[lid] = total;
@@ -53,14 +62,19 @@ fn scan_blocks(
             add = tmp[lid - off];
         }
         workgroupBarrier();
-        tmp[lid] += add;
+        tmp[lid] = sat_add(tmp[lid], add);
         workgroupBarrier();
     }
-    let excl = tmp[lid] - total;
+    // Exclusive prefix = inclusive prefix of the previous thread (subtracting
+    // `total` would be wrong once saturated).
+    var excl = 0u;
+    if (lid > 0u) {
+        excl = tmp[lid - 1u];
+    }
     for (var k = 0u; k < PER_THREAD; k++) {
         let idx = base + k;
         if (idx < S.len) {
-            data[idx] = v[k] + excl;
+            data[idx] = sat_add(v[k], excl);
         }
     }
     if (lid == 255u) {
@@ -80,7 +94,7 @@ fn add(
     for (var k = 0u; k < PER_THREAD; k++) {
         let idx = base + k;
         if (idx < S.len) {
-            data[idx] += s;
+            data[idx] = sat_add(data[idx], s);
         }
     }
 }

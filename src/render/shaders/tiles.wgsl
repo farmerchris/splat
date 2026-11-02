@@ -55,16 +55,24 @@ fn emit(
     let si = order[j];
     let pr = rects[j];
     let r = vec4<u32>(pr.x & 0xffffu, pr.x >> 16u, pr.y & 0xffffu, pr.y >> 16u);
+    // Saturated exclusive scan of the counts (see scan.wgsl).
     var o = counts[j];
+    let total = sat_add(o, (r.z - r.x) * (r.w - r.y));
     if (j == vis - 1u) {
-        atomicStore(&counters[1], o + (r.z - r.x) * (r.w - r.y));
+        // Total pair count, saturated; counters[2] flags a u32 overflow.
+        atomicStore(&counters[1], total);
+        if (total == 0xffffffffu) {
+            atomicStore(&counters[2], 1u);
+        }
     }
-    for (var ty = r.y; ty < r.w; ty++) {
-        for (var tx = r.x; tx < r.z; tx++) {
-            if (o < P.cap) {
-                tile_keys[o] = ty * P.tiles_x + tx;
-                tile_vals[o] = si;
-            }
+    // Pairs past the buffer capacity are dropped (the host grows the buffers
+    // and re-renders, or, at the device limit, renders the front-most pairs).
+    // `o` never exceeds `end`, so it cannot wrap.
+    let end = min(total, P.cap);
+    for (var ty = r.y; ty < r.w && o < end; ty++) {
+        for (var tx = r.x; tx < r.z && o < end; tx++) {
+            tile_keys[o] = ty * P.tiles_x + tx;
+            tile_vals[o] = si;
             o++;
         }
     }
